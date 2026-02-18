@@ -988,3 +988,86 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ===== PWA Install Banner ===== */
+.install-banner {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--radius);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  animation: slideDown 0.3s ease;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.btn-install {
+  padding: 0.4rem 1rem;
+  border-radius: 9999px;
+  background: white;
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: 0.8rem;
+  transition: opacity 0.15s;
+}
+
+.btn-install:hover {
+  opacity: 0.9;
+}
+
+.btn-install-dismiss {
+  padding: 0.4rem 0.8rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  font-size: 0.8rem;
+  transition: background 0.15s;
+}
+
+.btn-install-dismiss:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ===== Mobile Responsive ===== */
+@media (max-width: 900px) {
+  .container {
+    padding: 0 0.75rem;
+  }
+
+  .calendar-day {
+    min-height: 60px;
+    padding: 0.25rem;
+  }
+
+  .event-chip {
+    font-size: 0.55rem;
+    padding: 1px 3px;
+  }
+
+  .day-number {
+    font-size: 0.75rem;
+  }
+
+  .install-banner {
+    font-size: 0.8rem;
+    padding: 0.6rem 1rem;
+  }
+}

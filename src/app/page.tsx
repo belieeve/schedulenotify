@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Calendar as CalendarIcon, ChevronLeft, ChevronRight, X, Plus, Trash2, Bell, BellOff } from 'lucide-react';
+import { Send, Calendar as CalendarIcon, ChevronLeft, ChevronRight, X, Plus, Trash2, Bell, BellOff, Download } from 'lucide-react';
 import { format, isSameDay, isSameMonth, addMonths, subMonths } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import {
@@ -15,7 +15,19 @@ import {
   parseAIResponse,
 } from '@/lib/calendar';
 
-// ---- Notification Helper (Browser API, no cost) ----
+// ---- Service Worker & Notification ----
+const registerServiceWorker = async () => {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return null;
+  try {
+    const registration = await navigator.serviceWorker.register('/sw.js');
+    console.log('[App] Service Worker registered');
+    return registration;
+  } catch (err) {
+    console.error('[App] SW registration failed:', err);
+    return null;
+  }
+};
+
 const requestNotificationPermission = async () => {
   if (typeof window === 'undefined' || !('Notification' in window)) return false;
   if (Notification.permission === 'granted') return true;
@@ -24,23 +36,18 @@ const requestNotificationPermission = async () => {
   return result === 'granted';
 };
 
-const scheduleNotification = (event: CalendarEvent) => {
-  if (typeof window === 'undefined' || !('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
-
-  const eventDate = new Date(event.date);
-  const now = new Date();
-  const diff = eventDate.getTime() - now.getTime() - 10 * 60 * 1000; // 10 min before
-
-  if (diff > 0 && diff < 24 * 60 * 60 * 1000) {
-    setTimeout(() => {
-      new Notification('📅 まもなく予定があります', {
-        body: `${formatEventTime(event.date)} ${event.title}${event.description ? '\n' + event.description : ''}`,
-        icon: '/favicon.ico',
-      });
-    }, diff);
-  }
+const sendEventsToSW = (events: CalendarEvent[]) => {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.ready.then((registration) => {
+    registration.active?.postMessage({
+      type: 'SCHEDULE_NOTIFICATIONS',
+      events,
+    });
+  });
 };
+
+// ---- PWA Install Prompt ----
+let deferredPrompt: Event | null = null;
 
 // ---- Add Event Modal ----
 function AddEventModal({
@@ -160,6 +167,8 @@ export default function Home() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [canInstall, setCanInstall] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(false);
 
   // Chat state
   const [messages, setMessages] = useState<{ id: string; text: string; sender: 'user' | 'ai' }[]>([]);
@@ -167,8 +176,9 @@ export default function Home() {
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load data on mount
+  // ---- Initialize ----
   useEffect(() => {
+    // Load events
     const loaded = loadEvents();
     setEvents(loaded);
     setIsLoaded(true);
@@ -178,52 +188,71 @@ export default function Home() {
       setNotificationsEnabled(Notification.permission === 'granted');
     }
 
+    // Check if already installed as PWA
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsInstalled(true);
+    }
+
+    // Register Service Worker
+    registerServiceWorker();
+
+    // Listen for SW messages
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'REQUEST_EVENTS') {
+          const currentEvents = loadEvents();
+          sendEventsToSW(currentEvents);
+        }
+      });
+    }
+
+    // Listen for PWA install prompt
+    const handleInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      setCanInstall(true);
+    };
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt);
+
     // Initial greeting
     const hour = new Date().getHours();
     let greeting = 'こんにちは';
     if (hour < 10) greeting = 'おはようございます';
     else if (hour >= 18) greeting = 'こんばんは';
 
-    setMessages([
-      {
-        id: '1',
-        text: `${greeting}！😊 あなたの予定管理をお手伝いします。\n\n「今日の予定」「明日の予定」「今週の予定」などと聞いてみてください。\n「ヘルプ」で使い方を確認できます！`,
-        sender: 'ai',
-      },
-    ]);
+    const todayEvents = filterEventsByDate(loaded, new Date());
+    let greetingText = `${greeting}！😊 あなたの予定管理をお手伝いします。\n\n`;
+    if (todayEvents.length > 0) {
+      greetingText += `📅 今日は${todayEvents.length}件の予定があります。「今日の予定」と聞いてみてください！\n\n`;
+    }
+    greetingText += '「ヘルプ」で使い方を確認できます！';
+
+    setMessages([{ id: '1', text: greetingText, sender: 'ai' }]);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+    };
   }, []);
 
-  // Save events when changed
+  // Save events & push to SW when changed
   useEffect(() => {
     if (isLoaded) {
       saveEvents(events);
+      if (notificationsEnabled) {
+        sendEventsToSW(events);
+      }
     }
-  }, [events, isLoaded]);
-
-  // Schedule notifications for today's upcoming events
-  useEffect(() => {
-    if (notificationsEnabled && events.length > 0) {
-      const today = new Date();
-      const todayEvents = filterEventsByDate(events, today);
-      todayEvents.forEach(scheduleNotification);
-    }
-  }, [events, notificationsEnabled]);
+  }, [events, isLoaded, notificationsEnabled]);
 
   // Auto-scroll chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
-  const handleAddEvent = useCallback(
-    (event: CalendarEvent) => {
-      setEvents((prev) => [...prev, event]);
-      // Schedule notification if enabled
-      if (notificationsEnabled) {
-        scheduleNotification(event);
-      }
-    },
-    [notificationsEnabled]
-  );
+  // ---- Handlers ----
+  const handleAddEvent = useCallback((event: CalendarEvent) => {
+    setEvents((prev) => [...prev, event]);
+  }, []);
 
   const handleDeleteEvent = useCallback((id: string) => {
     setEvents((prev) => prev.filter((e) => e.id !== id));
@@ -236,6 +265,22 @@ export default function Home() {
     }
     const granted = await requestNotificationPermission();
     setNotificationsEnabled(granted);
+    if (granted) {
+      sendEventsToSW(events);
+    }
+  };
+
+  const handleInstall = async () => {
+    if (!deferredPrompt) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (deferredPrompt as any).prompt();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { outcome } = await (deferredPrompt as any).userChoice;
+    if (outcome === 'accepted') {
+      setCanInstall(false);
+      setIsInstalled(true);
+    }
+    deferredPrompt = null;
   };
 
   const handleSendMessage = () => {
@@ -247,7 +292,6 @@ export default function Home() {
     setInputValue('');
     setIsTyping(true);
 
-    // Simulate typing delay (no API call!)
     setTimeout(() => {
       const result = parseAIResponse(currentInput, events);
       setMessages((prev) => [
@@ -274,6 +318,24 @@ export default function Home() {
 
   return (
     <div className="container">
+      {/* Install Banner */}
+      {canInstall && !isInstalled && (
+        <div className="install-banner">
+          <div className="flex items-center gap-2">
+            <Download size={16} />
+            <span>ホーム画面に追加して、通知を受け取ろう！</span>
+          </div>
+          <div className="flex gap-2">
+            <button className="btn-install-dismiss" onClick={() => setCanInstall(false)}>
+              あとで
+            </button>
+            <button className="btn-install" onClick={handleInstall}>
+              インストール
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="header justify-between">
         <div className="flex items-center gap-3">
@@ -298,6 +360,9 @@ export default function Home() {
             ) : (
               <BellOff size={18} />
             )}
+            <span className="text-xs" style={{ color: notificationsEnabled ? 'var(--primary)' : 'var(--text-muted)' }}>
+              {notificationsEnabled ? 'ON' : 'OFF'}
+            </span>
           </button>
         </div>
       </header>
@@ -314,7 +379,13 @@ export default function Home() {
               <button className="calendar-nav-btn" onClick={() => setCurrentDate(subMonths(currentDate, 1))}>
                 <ChevronLeft size={18} />
               </button>
-              <button className="calendar-today-btn" onClick={() => { setCurrentDate(new Date()); setSelectedDate(new Date()); }}>
+              <button
+                className="calendar-today-btn"
+                onClick={() => {
+                  setCurrentDate(new Date());
+                  setSelectedDate(new Date());
+                }}
+              >
                 今日
               </button>
               <button className="calendar-nav-btn" onClick={() => setCurrentDate(addMonths(currentDate, 1))}>
@@ -346,11 +417,20 @@ export default function Home() {
                   >
                     <span className={`day-number ${dayOfWeek === 0 ? 'sun' : dayOfWeek === 6 ? 'sat' : ''}`}>
                       {isToday ? (
-                        <span className="day-number" style={{
-                          background: 'var(--primary)', color: 'white', borderRadius: '50%',
-                          width: 26, height: 26, display: 'inline-flex', alignItems: 'center',
-                          justifyContent: 'center', fontWeight: 600, fontSize: '0.8rem'
-                        }}>
+                        <span
+                          style={{
+                            background: 'var(--primary)',
+                            color: 'white',
+                            borderRadius: '50%',
+                            width: 26,
+                            height: 26,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 600,
+                            fontSize: '0.8rem',
+                          }}
+                        >
                           {format(day, 'd')}
                         </span>
                       ) : (
@@ -360,7 +440,7 @@ export default function Home() {
                     {dayEvents.slice(0, 3).map((event) => (
                       <div
                         key={event.id}
-                        className={`event-chip`}
+                        className="event-chip"
                         style={{ backgroundColor: getEventColor(event.color) }}
                       >
                         {event.title}
